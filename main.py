@@ -1,5 +1,19 @@
+Professional Website Chatbot - Backend
+----------------------------------------
+Client onboarding: ek URL do, poori website crawl ho jayegi aur
+uska knowledge base ban jayega. Phir client ko ek chhota <script>
+tag milega jo woh apni website pe laga sakta hai.
+
+Run:
+    pip install -r requirements.txt
+    cp .env.example .env   # phir .env mein apni OPENAI_API_KEY daalein
+    uvicorn main:app --reload --port 8000
+"""
+
 import os
+import threading
 import uuid
+
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,9 +28,15 @@ load_dotenv()
 
 app = FastAPI(title="Website Chatbot API")
 
+# In-memory job tracker for background onboarding (crawling large sites
+# can take minutes, longer than most hosting platforms allow a single
+# HTTP request to stay open, so we run it in a background thread).
+JOBS = {}
+
+allowed_origins = os.environ.get("ALLOWED_ORIGINS", "*")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[""] if allowed_origins == "" else allowed_origins.split(","),
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -34,34 +54,67 @@ class ChatRequest(BaseModel):
     history: list[dict] = []  # [{"role": "user"/"assistant", "content": "..."}]
 
 
+def _run_onboarding_job(job_id, url, business_name, max_pages):
+    """Actual crawling work, run in a background thread so the HTTP
+    request that triggered it can return immediately (avoids platform
+    timeouts on large crawls)."""
+    try:
+        pages, product_links_by_page, category_result_counts, theme_color = crawl_website(
+            url, max_pages=max_pages
+        )
+        if not pages:
+            JOBS[job_id] = {"status": "error", "detail": "Website se koi content nahi mila."}
+            return
+
+        chunks = chunk_pages(pages)
+        chunks.extend(build_count_chunks(product_links_by_page, category_result_counts))
+
+        client_id = uuid.uuid4().hex[:12]
+        num_chunks = save_client_kb(client_id, business_name, url, chunks, theme_color)
+
+        JOBS[job_id] = {
+            "status": "done",
+            "client_id": client_id,
+            "business_name": business_name,
+            "pages_crawled": len(pages),
+            "chunks_saved": num_chunks,
+            "theme_color_detected": theme_color,
+            "embed_snippet": (
+                f'<script src="https://YOUR-SERVER-DOMAIN/widget.js" '
+                f'data-client-id="{client_id}" data-color="{theme_color}"></script>'
+            ),
+        }
+    except Exception as e:
+        JOBS[job_id] = {"status": "error", "detail": str(e)}
+
+
 @app.post("/admin/onboard")
 def onboard_client(req: OnboardRequest):
-    """Naye client ki website crawl karke uska chatbot bana do."""
+    """Naye client ki website crawl karna SHURU karta hai (background mein)
+    aur turant ek job_id wapis deta hai. Progress check karne ke liye
+    /admin/onboard/status/{job_id} use karein."""
     url = req.url if req.url.startswith("http") else f"https://{req.url}"
 
-    pages, product_links_by_page, category_result_counts, theme_color = crawl_website(
-        url, max_pages=req.max_pages
+    job_id = uuid.uuid4().hex[:10]
+    JOBS[job_id] = {"status": "running"}
+
+    thread = threading.Thread(
+        target=_run_onboarding_job,
+        args=(job_id, url, req.business_name, req.max_pages),
+        daemon=True,
     )
-    if not pages:
-        raise HTTPException(status_code=400, detail="Website se koi content nahi mila.")
+    thread.start()
 
-    chunks = chunk_pages(pages)
-    chunks.extend(build_count_chunks(product_links_by_page, category_result_counts))
+    return {"job_id": job_id, "status": "running"}
 
-    client_id = uuid.uuid4().hex[:12]
-    num_chunks = save_client_kb(client_id, req.business_name, url, chunks, theme_color)
 
-    return {
-        "client_id": client_id,
-        "business_name": req.business_name,
-        "pages_crawled": len(pages),
-        "chunks_saved": num_chunks,
-        "theme_color_detected": theme_color,
-        "embed_snippet": (
-            f'<script src="https://YOUR-SERVER-DOMAIN/widget.js" '
-            f'data-client-id="{client_id}" data-color="{theme_color}"></script>'
-        ),
-    }
+@app.get("/admin/onboard/status/{job_id}")
+def onboard_status(job_id: str):
+    """Onboarding job ka current status/result check karein."""
+    job = JOBS.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job ID nahi mila.")
+    return job
 
 
 @app.post("/chat")
@@ -123,7 +176,7 @@ def chat(req: ChatRequest):
 def serve_widget():
     """Client ki website pe embed hone wali JS file serve karta hai."""
     return FileResponse(
-        os.path.join(os.path.dirname(__file__), "..", "widget", "chatbot-widget.js"),
+        os.path.join(os.path.dirname(_file_), "..", "widget", "chatbot-widget.js"),
         media_type="application/javascript",
     )
 
