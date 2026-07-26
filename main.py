@@ -177,7 +177,7 @@ def chat(req: ChatRequest):
 def serve_widget():
     """Client ki website pe embed hone wali JS file serve karta hai."""
     return FileResponse(
-        os.path.join(os.path.dirname(__file__), "..", "widget", "chatbot-widget.js"),
+        os.path.join(os.path.dirname(__file__), "widget", "chatbot-widget.js"),),
         media_type="application/javascript",
     )
 
