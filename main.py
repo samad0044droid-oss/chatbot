@@ -1,3 +1,4 @@
+"""
 Professional Website Chatbot - Backend
 ----------------------------------------
 Client onboarding: ek URL do, poori website crawl ho jayegi aur
@@ -36,7 +37,7 @@ JOBS = {}
 allowed_origins = os.environ.get("ALLOWED_ORIGINS", "*")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[""] if allowed_origins == "" else allowed_origins.split(","),
+    allow_origins=["*"] if allowed_origins == "*" else allowed_origins.split(","),
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -176,7 +177,7 @@ def chat(req: ChatRequest):
 def serve_widget():
     """Client ki website pe embed hone wali JS file serve karta hai."""
     return FileResponse(
-        os.path.join(os.path.dirname(_file_), "..", "widget", "chatbot-widget.js"),
+        os.path.join(os.path.dirname(__file__), "..", "widget", "chatbot-widget.js"),
         media_type="application/javascript",
     )
 
